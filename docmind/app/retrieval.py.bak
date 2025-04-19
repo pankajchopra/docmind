@@ -1,0 +1,172 @@
+# app/retrieval.py
+from typing import List, Dict, Any, Optional, Tuple
+from langchain.schema.retriever import BaseRetriever
+from langchain_community.retrievers import BM25Retriever as LCBm25Retriever
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain.retrievers.document_compressors import EmbeddingsFilter
+from langchain.chains import RetrievalQA
+from langchain.schema import Document
+from langchain.vectorstores import Chroma
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.llms import OpenAI
+from langchain.schema import Document
+
+
+class LightRAGRetrieverLangChain:
+    """Enhanced retrieval using LightRAG techniques with LangChain."""
+
+    def __init__(self, vector_store, llm, documents=None):
+        """Initialize with vector store and LLM."""
+        self.llm = llm
+        self.vector_store = vector_store
+        self.documents = documents
+        self.vector_retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
+        self.kg_retriever = None  # Will be initialized if KG is available
+        self.bm25_retriever = None
+
+        # Initialize BM25 if documents provided
+        if documents:
+            self.setup_bm25_retriever(documents)
+
+    def setup_bm25_retriever(self, documents):
+        """Set up a BM25 retriever from documents."""
+        self.bm25_retriever = LCBm25Retriever.from_documents(
+            documents,
+            k=5
+        )
+        return self.bm25_retriever
+
+    def hybrid_retrieval(self, query_str: str) -> List[Document]:
+        """Perform hybrid retrieval combining vector and keyword search."""
+        if not self.vector_retriever or not self.bm25_retriever:
+            raise ValueError("Both vector and BM25 retrievers must be initialized")
+
+        # Get results from both retrievers
+        vector_docs = self.vector_retriever.get_relevant_documents(query_str)
+        bm25_docs = self.bm25_retriever.get_relevant_documents(query_str)
+
+        # Combine and deduplicate docs
+        all_docs = []
+        doc_ids = set()
+
+        for doc in vector_docs + bm25_docs:
+            # Using content as a simple deduplication key (you might need more robust approach)
+            if doc.page_content not in doc_ids:
+                all_docs.append(doc)
+                doc_ids.add(doc.page_content)
+
+        return all_docs
+
+    def graph_augmented_retrieval(self, query_str: str) -> List[Document]:
+        """Perform graph-augmented retrieval."""
+        if not self.vector_retriever or not self.kg_retriever:
+            raise ValueError("Both vector and knowledge graph retrievers must be initialized")
+
+        # Get direct matches from vector index
+        vector_docs = self.vector_retriever.get_relevant_documents(query_str)
+
+        # Get related docs from knowledge graph
+        kg_docs = self.kg_retriever.get_relevant_documents(query_str)
+
+        # Combine and deduplicate
+        all_docs = []
+        doc_contents = set()
+
+        # Prioritize knowledge graph results but include both
+        for doc in kg_docs + vector_docs:
+            if doc.page_content not in doc_contents:
+                all_docs.append(doc)
+                doc_contents.add(doc.page_content)
+
+        return all_docs
+
+    def query_transformation_retrieval(self, query_str: str) -> Tuple[str, List[Document]]:
+        """Use query transformation to improve retrieval."""
+        if not self.vector_retriever:
+            raise ValueError("Vector retriever must be initialized")
+
+        # Use LLM to transform the query
+        transformed_query = self.llm.invoke(
+            f"Please reformulate the following question into a more detailed and specific question that would help with document retrieval: {query_str}"
+        )
+
+        print(f"Original query: {query_str}")
+        print(f"Transformed query: {transformed_query}")
+
+        # Use transformed query for retrieval
+        docs = self.vector_retriever.get_relevant_documents(transformed_query)
+
+        return transformed_query, docs
+
+    def reranking_retrieval(self, query_str: str, initial_results: List[Document]) -> List[Document]:
+        """Rerank initial retrieval results."""
+        # Create embedding filter for reranking
+        embeddings = self.vector_store.embeddings
+        reranker = EmbeddingsFilter(embeddings=embeddings, similarity_threshold=0.7)
+
+        # Convert to format expected by reranker if needed
+        # This depends on the specific reranker implementation
+
+        # Apply reranking
+        reranked_docs = reranker.compress_documents(initial_results, query=query_str)
+
+        return reranked_docs
+
+    def create_advanced_retrieval_pipeline(self, query_str: str, retrieval_type: str = "hybrid"):
+        """Create an advanced retrieval pipeline."""
+        # Get documents based on retrieval type
+        if retrieval_type == "hybrid":
+            docs = self.hybrid_retrieval(query_str)
+        elif retrieval_type == "graph":
+            docs = self.graph_augmented_retrieval(query_str)
+        elif retrieval_type == "transformed":
+            _, docs = self.query_transformation_retrieval(query_str)
+        else:
+            raise ValueError(f"Unknown retrieval type: {retrieval_type}")
+
+        # Apply reranking
+        reranked_docs = self.reranking_retrieval(query_str, docs)
+
+        # Create a custom retriever that returns our reranked docs
+        class CustomRetriever(BaseRetriever):
+            def __init__(self, docs):
+                super().__init__()
+                self.docs = docs
+
+            def _get_relevant_documents(self, query):
+                return self.docs
+
+            async def _aget_relevant_documents(self, query):
+                return self.docs
+
+        # Create custom retriever with our reranked docs
+        custom_retriever = CustomRetriever(reranked_docs)
+
+        # Create QA chain with our custom retriever
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=self.llm,
+            retriever=custom_retriever,
+            return_source_documents=True
+        )
+
+        return qa_chain
+
+
+# Example usage
+if __name__ == "__main__":
+    # Set up embeddings and vector store
+    embeddings = OpenAIEmbeddings()
+    docs = [Document(page_content="..."), Document(page_content="...")]  # Your documents
+    vector_store = Chroma.from_documents(docs, embeddings)
+
+    # Create LLM
+    llm = OpenAI()
+
+    # Create enhanced retriever
+    retriever = LightRAGRetrieverLangChain(vector_store, llm, docs)
+
+    # Test hybrid retrieval
+    query = "What are the key techniques for document retrieval?"
+    hybrid_chain = retriever.create_advanced_retrieval_pipeline(query, "hybrid")
+    response = hybrid_chain.invoke(query)
+    print("Hybrid Retrieval Response:", response)

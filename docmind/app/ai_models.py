@@ -6,6 +6,7 @@ AVAILABLE_LLMS = {
     "claude-3-5-haiku": {
         "provider": "anthropic",
         "model": "claude-3-5-haiku-20240307",
+        "base_url": "https://api.anthropic.com/v1/claude-2",
         "description": "Fast, efficient model for high-throughput tasks"
     },
     "claude-3-5-sonnet": {
@@ -202,8 +203,16 @@ AVAILABLE_EMBEDDINGS = {
     }
 }
 
+AVAILABLE_PROVIDERSv={
+    "openai": "OpenAI",
+    "google": "Google",
+    "huggingface": "Hugging Face",
+    "cohere": "Cohere",
+    "azure": "Microsoft Azure",
+    "local": "Local"
+}
 # Default selections
-DEFAULT_LLM_PROVIDER = AVAILABLE_LLMS["claude-3-7-sonnet"]["provider"]
-DEFAULT_LLM_MODEL = AVAILABLE_LLMS["claude-3-7-sonnet"]["model"]
+DEFAULT_LLM_PROVIDER = AVAILABLE_LLMS["gpt-3.5-turbo"]["provider"]
+DEFAULT_LLM_MODEL = AVAILABLE_LLMS["gpt-3.5-turbo"]["model"]
 DEFAULT_EMBEDDING_PROVIDER = AVAILABLE_EMBEDDINGS["openai-small"]["provider"]
 DEFAULT_EMBEDDING_MODEL = AVAILABLE_EMBEDDINGS["openai-small"]["model"]

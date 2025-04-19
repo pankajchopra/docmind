@@ -1,0 +1,349 @@
+# app/indexing.py
+import os
+import json
+import hashlib
+from typing import List, Dict, Any, Optional
+from langchain.schema.document import Document
+from langchain_openai import OpenAI, OpenAIEmbeddings
+from langchain_chroma import Chroma
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain.retrievers.document_compressors import EmbeddingsFilter
+from langchain.chains import RetrievalQA
+
+from app.config import CHROMA_STORE_DIR, DEFAULT_LLM_MODEL, DEFAULT_EMBEDDING_MODEL, OPENAI_API_KEY, CHUNKS_CACHE_DIR
+
+
+class DocumentIndexer:
+    def __init__(self,
+                 llm_model: str = DEFAULT_LLM_MODEL,
+                 embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+                 collection_name: str = "MyStockCollection"):
+        """Initialize the document indexer with specified models."""
+        # Configure default models
+        self.llm = OpenAI(model=llm_model, api_key=OPENAI_API_KEY)
+        self.embedding_model = OpenAIEmbeddings(
+            model=embedding_model,
+            api_key=OPENAI_API_KEY
+        )
+
+        self.collection_name = collection_name
+        self.vector_store = None
+
+        # Path to metadata file tracking chunking parameters
+        self.chunks_metadata_path = os.path.join(CHUNKS_CACHE_DIR, f"{collection_name}_metadata.json")
+
+        # Load existing chunking metadata if available
+        self.chunks_metadata = self._load_chunks_metadata()
+
+    def _load_chunks_metadata(self) -> Dict:
+        """Load existing metadata about chunked documents."""
+        if os.path.exists(self.chunks_metadata_path):
+            try:
+                with open(self.chunks_metadata_path, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading chunks metadata: {e}")
+                return {"documents": {}, "chunking_params": {}}
+        return {"documents": {}, "chunking_params": {}}
+
+    def _save_chunks_metadata(self):
+        """Save metadata about chunked documents."""
+        try:
+            with open(self.chunks_metadata_path, 'w') as f:
+                json.dump(self.chunks_metadata, f)
+        except Exception as e:
+            print(f"Error saving chunks metadata: {e}")
+
+    def _compute_document_hash(self, content: str, source: str) -> str:
+        """Compute a hash for a document based on its content and source."""
+        hash_input = f"{content}|{source}"
+        return hashlib.md5(hash_input.encode()).hexdigest()
+
+    def _get_chunk_cache_path(self, doc_hash: str) -> str:
+        """Get the path where chunked documents are stored."""
+        return os.path.join(CHUNKS_CACHE_DIR, f"{doc_hash}.json")
+
+    def save_chunks(self, original_docs: List[Dict], chunks: List[Document], chunking_params: Dict):
+        """Save chunked documents and their metadata."""
+        for doc in original_docs:
+            # Compute document hash
+            doc_hash = self._compute_document_hash(doc.get("content", ""), doc.get("source", ""))
+
+            # Filter chunks for this document
+            doc_chunks = [chunk for chunk in chunks if chunk.metadata.get("source") == doc.get("source")]
+
+            # Convert chunks to serializable format
+            serializable_chunks = []
+            for chunk in doc_chunks:
+                serializable_chunk = {
+                    "page_content": chunk.page_content,
+                    "metadata": chunk.metadata
+                }
+                serializable_chunks.append(serializable_chunk)
+
+            # Save chunks to file
+            cache_path = self._get_chunk_cache_path(doc_hash)
+            with open(cache_path, 'w') as f:
+                json.dump(serializable_chunks, f)
+
+            # Update metadata
+            self.chunks_metadata["documents"][doc_hash] = {
+                "source": doc.get("source", ""),
+                "last_updated": doc.get("last_updated", ""),
+                "chunk_count": len(doc_chunks),
+                "params_id": str(hash(frozenset(chunking_params.items()))),
+            }
+
+        # Save chunking parameters
+        params_id = str(hash(frozenset(chunking_params.items())))
+        if params_id not in self.chunks_metadata["chunking_params"]:
+            self.chunks_metadata["chunking_params"][params_id] = chunking_params
+
+        # Save metadata
+        self._save_chunks_metadata()
+
+    def load_cached_chunks(self, original_docs: List[Dict], chunking_params: Dict) -> Optional[List[Document]]:
+        """Load cached chunks if they exist with the same parameters."""
+        # Compute params ID
+        params_id = str(hash(frozenset(chunking_params.items())))
+
+        # Check if all documents are cached with the same parameters
+        all_cached = True
+        missing_docs = []
+
+        for doc in original_docs:
+            doc_hash = self._compute_document_hash(doc.get("content", ""), doc.get("source", ""))
+
+            # Check if document is in cache with correct parameters
+            if (doc_hash not in self.chunks_metadata["documents"] or
+                    self.chunks_metadata["documents"][doc_hash]["params_id"] != params_id):
+                all_cached = False
+                missing_docs.append(doc)
+
+        if not all_cached:
+            print(f"Some documents not cached or using different parameters. Need to process {len(missing_docs)} documents.")
+            return None
+
+        # All documents are cached, load them
+        all_chunks = []
+        for doc in original_docs:
+            doc_hash = self._compute_document_hash(doc.get("content", ""), doc.get("source", ""))
+            cache_path = self._get_chunk_cache_path(doc_hash)
+
+            try:
+                with open(cache_path, 'r') as f:
+                    cached_chunks = json.load(f)
+
+                # Convert back to Document objects
+                for chunk_data in cached_chunks:
+                    chunk = Document(
+                        page_content=chunk_data["page_content"],
+                        metadata=chunk_data["metadata"]
+                    )
+                    all_chunks.append(chunk)
+            except Exception as e:
+                print(f"Error loading cached chunks for {doc.get('source')}: {e}")
+                return None
+
+        print(f"Loaded {len(all_chunks)} cached chunks for {len(original_docs)} documents")
+        return all_chunks
+
+    def create_vector_index(self,
+                            documents: List[Document],
+                            persist: bool = True) -> Chroma:
+        """Create a vector store index from processed documents."""
+        # Extract document IDs for consistent storage
+        document_ids = [doc.metadata.get("id") for doc in documents]
+
+        # Create Chroma vector store
+        self.vector_store = Chroma.from_documents(
+            documents=documents,
+            embedding=self.embedding_model,
+            ids=document_ids,
+            collection_name=self.collection_name,
+            persist_directory=CHROMA_STORE_DIR if persist else None
+        )
+
+        if persist:
+            self.vector_store.persist()
+            print(f"Vector index created and saved to {CHROMA_STORE_DIR}")
+
+        return self.vector_store
+
+    def load_index(self) -> Optional[Chroma]:
+        """Load a previously saved index."""
+        if not os.path.exists(CHROMA_STORE_DIR):
+            print(f"Index not found at {CHROMA_STORE_DIR}")
+            return None
+
+        self.vector_store = Chroma(
+            persist_directory=CHROMA_STORE_DIR,
+            embedding_function=self.embedding_model,
+            collection_name=self.collection_name
+        )
+
+        return self.vector_store
+
+    def update_index(self, documents: List[Document]) -> Chroma:
+        """Update the index with new documents, avoiding duplicates."""
+        # Load existing index if available
+        if self.vector_store is None:
+            try:
+                self.load_index()
+            except Exception:
+                # If loading fails, create a new index
+                return self.create_vector_index(documents)
+
+        # Get document IDs directly from metadata
+        document_ids = [doc.metadata.get("id") for doc in documents]
+
+        # Get existing IDs from ChromaDB
+        try:
+            collection = self.vector_store.get()
+            existing_ids = set(collection["ids"]) if collection["ids"] else set()
+        except Exception as e:
+            print(f"Error accessing collection: {e}")
+            existing_ids = set()
+
+        # Filter out documents that already exist
+        new_docs = []
+        new_docs_ids = []
+        for doc, doc_id in zip(documents, document_ids):
+            if doc_id not in existing_ids:
+                new_docs.append(doc)
+                new_docs_ids.append(doc_id)
+
+        # Only add documents if there are new ones
+        if new_docs:
+            self.vector_store.add_documents(
+                documents=new_docs,
+                ids=new_docs_ids
+            )
+            # Persist changes to disk
+            self.vector_store.persist()
+            print(f"Added {len(new_docs)} new documents to ChromaDB. Skipped {len(documents) - len(new_docs)} existing documents.")
+        else:
+            print("No new documents to add to ChromaDB. All documents already exist.")
+
+        return self.vector_store
+
+    def delete_collection(self):
+        """Delete the entire collection."""
+        if self.vector_store is None:
+            self.load_index()
+
+        if self.vector_store:
+            self.vector_store.delete_collection()
+            self.vector_store = None
+            print(f"Collection {self.collection_name} deleted")
+
+    def create_retriever(self, search_type="similarity", k=4, **kwargs):
+        """Create a retriever from the vector store."""
+        if self.vector_store is None:
+            self.load_index()
+
+        if self.vector_store is None:
+            raise ValueError("No vector store available. Please create or load an index first.")
+
+        # Create base retriever
+        retriever = self.vector_store.as_retriever(
+            search_type=search_type,
+            search_kwargs={"k": k, **kwargs}
+        )
+
+        return retriever
+
+    def create_contextual_retriever(self, threshold=0.7, k=4):
+        """Create a contextual compression retriever with embeddings filter.
+        This is a more advanced retrieval mechanism that adds a filtering layer
+        on top of the base retriever. Helps reduce irrelevant results by filtering out documents that aren't similar enough
+        More selective and precise, potentially improving relevance
+        """
+        base_retriever = self.create_retriever(k=k)
+
+        # Create embeddings filter
+        filter_compressor = EmbeddingsFilter(
+            embeddings=self.embedding_model,
+            similarity_threshold=threshold
+        )
+
+        # Create contextual compression retriever
+        contextual_retriever = ContextualCompressionRetriever(
+            base_compressor=filter_compressor,
+            base_retriever=base_retriever
+        )
+
+        return contextual_retriever
+
+    def create_qa_chain(self, retriever=None):
+        """Create a QA chain using the specified retriever or default retriever.
+         create_qa_chain method creates a question-answering pipeline that ties together
+         your retrieval system with language model capabilities
+         Document retrieval: Finding the most relevant chunks
+        Context processing: Preparing those chunks for the LLM
+        Answer generation: Using the LLM to create a coherent answer from those chunks
+        Source tracking: Keeping track of which documents contributed to the answer
+        """
+        if retriever is None:
+            retriever = self.create_retriever()
+
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=self.llm,
+            chain_type="stuff",
+            retriever=retriever,
+            return_source_documents=True
+        )
+
+        return qa_chain
+
+
+# Example usage
+if __name__ == "__main__":
+    from app.ingestion import DocumentProcessor
+
+    # Initialize document processor
+    processor = DocumentProcessor()
+
+    # Define chunking parameters
+    chunking_params = {
+        "chunk_size": 1000,
+        "chunk_overlap": 200,
+        "separator": "\n\n"
+    }
+
+    # Get original documents first (before chunking)
+    original_docs = processor.get_raw_documents()
+
+    # Initialize indexer
+    indexer = DocumentIndexer()
+
+    # Try to load cached chunks first
+    cached_chunks = indexer.load_cached_chunks(original_docs, chunking_params)
+
+    if cached_chunks:
+        # Use cached chunks
+        chunks = cached_chunks
+    else:
+        # Process documents with chunking
+        doc_chunks = processor.ingest_documents(
+            chunk_size=chunking_params["chunk_size"],
+            chunk_overlap=chunking_params["chunk_overlap"],
+            separator=chunking_params["separator"]
+        )
+
+        web_chunks = processor.ingest_web_pages(
+            chunk_size=chunking_params["chunk_size"],
+            chunk_overlap=chunking_params["chunk_overlap"],
+            separator=chunking_params["separator"]
+        )
+        chunks = doc_chunks.append(web_chunks)
+        # Save chunks for future use
+        indexer.save_chunks(original_docs, chunks, chunking_params)
+
+    # Create index(save to the db) with chunks
+    vector_store = indexer.create_vector_index(chunks)
+
+    # Test query
+    qa_chain = indexer.create_qa_chain()
+    response = qa_chain({"query": "What are the main topics in these documents?"})
+    print(response["result"])

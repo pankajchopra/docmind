@@ -94,7 +94,7 @@ def optimize_system_parameters():
     # This function would tune parameters based on benchmark results
     # For production systems, you might use more sophisticated optimization
     
-    # Example optimization: determine best retrieval_type based on benchmarks
+    # Example optimization: it determines best retrieval_type based on benchmarks
     benchmark_df = run_benchmark_tests()
     
     # Calculate average quality and speed for each retrieval type
@@ -126,7 +126,7 @@ def optimize_system_parameters():
     print(f"- DEFAULT_RETRIEVAL_TYPE = '{best_method}'")
     
     # Update config file with optimized settings
-    with open('app/config.py', 'a') as f:a
+    with open('app/config.py', 'a') as f:
         f.write(f"\n# Optimized settings based on benchmarks\n")
         f.write(f"DEFAULT_RETRIEVAL_TYPE = '{best_method}'\n")
     

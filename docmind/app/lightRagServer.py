@@ -1,12 +1,14 @@
 # app/agents.py
 from typing import List, Dict, Any, Optional
 from langchain.tools import Tool
-from langchain_openai import ChatOpenAI
+from langchain.tools import tool
+from langchain_openai import OpenAI, ChatOpenAI
 from langchain.agents import initialize_agent, AgentType
 from functools import wraps
 import datetime
 import wikipedia
-from flask import Flask, request, jsonify
+import json
+from langchain.schema import Document
 
 
 # Tool decorator for simplifying tool creation
@@ -90,21 +92,18 @@ class DocMindAgent:
             Returns:
                 Knowledge graph query results
             """
-            if not hasattr(self.retriever, 'kg_retriever') or not self.retriever.kg_retriever:
+            if not self.retriever.kg_retriever:
                 return "Knowledge graph not initialized"
 
-            try:
-                docs = self.retriever.graph_augmented_retrieval(query)
+            docs = self.retriever.graph_augmented_retrieval(query)
 
-                # Format results
-                results = []
-                for doc in docs:
-                    entity = doc.metadata.get("entity", "Unknown")
-                    results.append(f"Entity: {entity} - {doc.page_content[:100]}...")
+            # Format results
+            results = []
+            for doc in docs:
+                entity = doc.metadata.get("entity", "Unknown")
+                results.append(f"Entity: {entity} - {doc.page_content[:100]}...")
 
-                return "\n".join(results) if results else "No results found in knowledge graph"
-            except Exception as e:
-                return f"Error searching knowledge graph: {str(e)}"
+            return "\n".join(results) if results else "No results found in knowledge graph"
 
         tools.append(search_knowledge_graph.tool)
 
@@ -153,8 +152,7 @@ class DocMindAgent:
         # Summarize document tool
         @tool("summarize_document", "Summarize a specific document")
         def summarize_document(document_id: str, max_length: int = 200) -> str:
-            """Summarize a specific document by ID.This would normally fetch the document by ID from a database
-
+            """Summarize a specific document by ID.
 
             Args:
                 document_id: The document identifier
@@ -163,23 +161,20 @@ class DocMindAgent:
             Returns:
                 Document summary
             """
-            if not hasattr(self.retriever, 'vector_retriever') or not self.retriever.vector_retriever:
+            if not self.retriever.vector_retriever:
                 return "Vector index not initialized"
 
             query = f"Generate a concise summary (max {max_length} words) of document {document_id}"
 
             # First try to find the document by ID
-            if hasattr(self.indexer, 'vector_store') and self.indexer.vector_store:
+            if self.indexer.vector_store:
                 # Create a query chain
-                try:
-                    qa_chain = self.retriever.create_advanced_retrieval_pipeline(
-                        f"document_id:{document_id}", "hybrid"
-                    )
-                    response = qa_chain({"query": query})
+                qa_chain = self.retriever.create_advanced_retrieval_pipeline(
+                    f"document_id:{document_id}", "hybrid"
+                )
+                response = qa_chain({"query": query})
 
-                    return f"Summary of document {document_id}:\n{response['result']}"
-                except Exception as e:
-                    return f"Error summarizing document: {str(e)}"
+                return f"Summary of document {document_id}:\n{response['result']}"
             else:
                 return f"Could not find document with ID {document_id}"
 
@@ -199,6 +194,7 @@ class DocMindAgent:
 # Create RESTful API for agent
 def create_agent_api(app, indexer, retriever):
     """Create Flask endpoints for agent interactions."""
+    from flask import Flask, request, jsonify
 
     @app.route('/api/agent/chat', methods=['POST'])
     def agent_chat():
@@ -251,6 +247,10 @@ if __name__ == "__main__":
     # Process documents
     processor = DocumentProcessor()
     documents = processor.ingest_documents()
+    web_documents = processor.ingest_web_pages()
+
+    # Combine all documents
+    all_documents = documents + web_documents
 
     # Create indexer
     indexer = DocumentIndexer()

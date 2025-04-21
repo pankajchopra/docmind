@@ -12,7 +12,7 @@ from langchain_community.document_loaders import WebBaseLoader
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-
+from ingestion_from_networkx import NetworkXGraphManager
 from app.ai_models import AVAILABLE_EMBEDDINGS
 from app.customeExceptions import ChromaException, DocumentProcessingException
 from app.config import CHROMA_STORE_DIR, DATA_DIR, METADATA_FILE, WEB_META_FILE, PROJECT_ROOT
@@ -403,6 +403,31 @@ class DocumentProcessor:
 
         return chunks
 
+    def ingest_all(self):
+        # Process PDF documents
+        try:
+            documents = self.ingest_documents()
+            logger.info(f"PDF Document Ingestion complete. Created {len(documents)} documents.")
+        except DocumentProcessingException as e:
+            logger.error(f"Failed to process PDF documents: {e}")
+            documents = []
+        # Process text documents
+        try:
+            txt_documents = self.ingest_text_documents()
+            logger.info(f"Text Document Ingestion complete. Created {len(txt_documents)} documents.")
+        except DocumentProcessingException as e:
+            logger.error(f"Failed to process text documents: {e}")
+            txt_documents = []
+        # Process web documents
+        try:
+            web_documents = self.ingest_web_pages()
+            logger.info(f"Web Document Ingestion complete. Created {len(web_documents)} documents.")
+        except DocumentProcessingException as e:
+            logger.error(f"Failed to process web documents: {e}")
+            web_documents = []
+        # Combine all documents
+        return documents + txt_documents + web_documents
+
 
 # Example usage
 if __name__ == "__main__":
@@ -413,37 +438,10 @@ if __name__ == "__main__":
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         logger = logging.getLogger(__name__)
-
         logger.info("Starting document processing")
-
         processor = DocumentProcessor()
+        all_documents = processor.ingest_all()
 
-        # Process PDF documents
-        try:
-            documents = processor.ingest_documents()
-            logger.info(f"PDF Document Ingestion complete. Created {len(documents)} documents.")
-        except DocumentProcessingException as e:
-            logger.error(f"Failed to process PDF documents: {e}")
-            documents = []
-
-        # Process text documents
-        try:
-            txt_documents = processor.ingest_text_documents()
-            logger.info(f"Text Document Ingestion complete. Created {len(txt_documents)} documents.")
-        except DocumentProcessingException as e:
-            logger.error(f"Failed to process text documents: {e}")
-            txt_documents = []
-
-        # Process web documents
-        try:
-            web_documents = processor.ingest_web_pages()
-            logger.info(f"Web Document Ingestion complete. Created {len(web_documents)} documents.")
-        except DocumentProcessingException as e:
-            logger.error(f"Failed to process web documents: {e}")
-            web_documents = []
-
-        # Combine all documents
-        all_documents = documents + txt_documents + web_documents
         logger.info(f"Total documents: {len(all_documents)}")
 
         if all_documents:
@@ -464,6 +462,25 @@ if __name__ == "__main__":
                     logger.info(f"Content: {doc.page_content[:100]}...")
             except ChromaException as e:
                 logger.error(f"Failed to save to Chroma: {e}")
+
+                # For graph creation - we need to process each document type appropriately
+                try:
+                    networkx = NetworkXGraphManager()
+
+                    # Process documents for the graph
+                    # Note: This should work with your existing implementation if modified to handle lists
+                    if networkx.process_documents(all_documents):
+                        print("Graph created successfully")
+
+                        # Get graph retriever for use with LightRAG
+                        graph_retriever = networkx.get_llama_graph_retriever()
+                        print("Graph retriever created successfully")
+
+                        # This retriever can now be passed to LightRAGRetriever
+                    else:
+                        print("Graph creation failed")
+                except Exception as e:
+                    logger.error(f"Error creating knowledge graph: {e}", exc_info=True)
         else:
             logger.warning("No documents to save to Chroma")
     except Exception as e:

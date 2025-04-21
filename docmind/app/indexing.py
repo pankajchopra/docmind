@@ -39,7 +39,7 @@ class DocumentIndexer:
         self.llm = ChatOpenAI(
             model=llm_model,
             api_key=OPENAI_API_KEY,
-            temperature=0.7
+            temperature=0
         )
         self.embedding_model = OpenAIEmbeddings(
             model=embedding_model,
@@ -59,7 +59,7 @@ class DocumentIndexer:
             raise ValueError(error_msg)
 
         try:
-            from app.ingestion import DocumentProcessor
+            from app.ingestion_vector import DocumentProcessor
             processor = DocumentProcessor()
             logger.info(f"Creating vector index with {len(documents)} documents")
             vector_store = processor.save_to_chroma(documents)
@@ -81,11 +81,10 @@ class DocumentIndexer:
 
         try:
             logger.info(f"Loading index from {CHROMA_STORE_DIR}")
-            self.vector_store = Chroma(
-                persist_directory=CHROMA_STORE_DIR,
-                embedding_function=self.embedding_model,
-                collection_name=self.collection_name
-            )
+            self.vector_store = Chroma(persist_directory=CHROMA_STORE_DIR,
+                                       embedding_function=self.embedding_model,
+                                       collection_name=self.collection_name
+                                       )
             return self.vector_store
         except Exception as e:
             error_msg = f"Error loading index: {e}"
@@ -214,7 +213,7 @@ class DocumentIndexer:
 
 # Example usage
 if __name__ == "__main__":
-    from app.ingestion import DocumentProcessor
+    from app.ingestion_vector import DocumentProcessor
 
     try:
         # Configure logging
@@ -228,11 +227,9 @@ if __name__ == "__main__":
 
         # Process documents
         processor = DocumentProcessor()
-        documents = processor.ingest_documents()
-        web_documents = processor.ingest_web_pages()
-        txt_documents = processor.ingest_text_documents()
+
         # Combine all documents
-        all_documents = documents + web_documents + txt_documents
+        all_documents = processor.ingest_all()
         logger.info(f"Processed {len(all_documents)} total documents")
 
         # Create indexes

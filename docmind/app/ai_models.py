@@ -31,6 +31,11 @@ AVAILABLE_LLMS = {
         "model": "gpt-4o",
         "description": "OpenAI's flagship multimodal model"
     },
+    "gpt-4o-mini": {
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "description": "OpenAI's flagship mini multimodal model"
+    },
     "gpt-4-turbo": {
         "provider": "openai",
         "model": "gpt-4-turbo-2024-04-09",

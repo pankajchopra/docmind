@@ -31,6 +31,9 @@ class LightRAGRetriever:
         if documents:
             self.setup_bm25_retriever(documents)
 
+            self.setup_knowledge_graph_retriever(kg_index)
+        # Initialize knowledge graph retriever
+
     def setup_bm25_retriever(self, documents):
         """Set up a BM25 retriever from documents."""
         if not documents:
@@ -313,7 +316,7 @@ def create_retrieval_api(app, indexer, retriever):
 # Example usage
 if __name__ == "__main__":
     from app.indexing import DocumentIndexer
-    from app.ingestion import DocumentProcessor
+    from app.ingestion_vector import DocumentProcessor
     from flask import Flask
     import os
 
@@ -333,7 +336,7 @@ if __name__ == "__main__":
     vector_store = indexer.create_vector_index(documents)
 
     # Create LLM
-    llm = ChatOpenAI(temperature=0)
+    llm = ChatOpenAI(temperature=0.7)
 
     # Create retriever
     retriever = LightRAGRetriever(vector_store, llm, documents)

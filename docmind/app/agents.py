@@ -251,6 +251,10 @@ if __name__ == "__main__":
     # Process documents
     processor = DocumentProcessor()
     documents = processor.ingest_documents()
+    web_documents = processor.ingest_web_pages()
+
+    # Combine all documents
+    all_documents = documents + web_documents
 
     # Create indexer
     indexer = DocumentIndexer()
